@@ -257,6 +257,7 @@ bool TableEncoder::DfsEncode(const string& phrase,
     if (Encode(*code, &encoded)) {
       DLOG(INFO) << "encode '" << phrase << "': "
                  << "[" << code->ToString() << "] -> [" << encoded << "]";
+      #pragma omp critical
       collector_->CreateEntry(phrase, encoded, value);
       return true;
     } else {
@@ -311,7 +312,9 @@ bool ScriptEncoder::DfsEncode(const string& phrase,
     if (limit) {
       --*limit;
     }
-    collector_->CreateEntry(phrase, code->ToString(), value);
+    // collector_->CreateEntry(phrase, code->ToString(), value);
+    #pragma omp critical
+    pending_entries.emplace_back(phrase, code->ToString(), value);
     return true;
   }
   bool ret = false;

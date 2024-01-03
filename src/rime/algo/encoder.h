@@ -11,6 +11,8 @@
 #include <boost/regex.hpp>
 #include <rime_api.h>
 
+#include <tuple>
+
 namespace rime {
 
 class RawCode : public vector<string> {
@@ -43,6 +45,8 @@ class Encoder {
   virtual bool EncodePhrase(const string& phrase, const string& value) = 0;
 
   void set_collector(PhraseCollector* collector) { collector_ = collector; }
+  
+  vector<std::tuple<string, string, string>> pending_entries;
 
  protected:
   PhraseCollector* collector_;
@@ -111,6 +115,7 @@ class ScriptEncoder : public Encoder {
                  size_t start_pos,
                  RawCode* code,
                  int* limit);
+
 };
 
 }  // namespace rime

@@ -8,6 +8,8 @@
 #define RIME_ENTRY_COLLECTOR_H_
 
 #include <queue>
+#include <vector>
+#include <omp.h>
 #include <rime/common.h>
 #include <rime/algo/encoder.h>
 #include <rime/dict/dictionary.h>
@@ -28,7 +30,7 @@ using WeightMap = map<string, double>;
 // may be many words, but may not be many representations for a word
 using WordMap = hash_map<string, vector<pair<string, double>>>;
 // [ (word, weight), ... ]
-using EncodeQueue = std::queue<pair<string, string>>;
+using EncodeQueue = std::vector<pair<string, string>>;
 
 class PresetVocabulary;
 class DictSettings;

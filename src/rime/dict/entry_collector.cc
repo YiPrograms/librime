@@ -111,7 +111,7 @@ void EntryCollector::Collect(const string& dict_file) {
     if (!code_str.empty()) {
       CreateEntry(word, code_str, weight_str);
     } else {
-      encode_queue.push({word, weight_str});
+      encode_queue.push_back({word, weight_str});
     }
     if (!stem_str.empty() && !code_str.empty()) {
       DLOG(INFO) << "add stem '" << word << "': "
@@ -126,23 +126,43 @@ void EntryCollector::Collect(const string& dict_file) {
 }
 
 void EntryCollector::Finish() {
-  while (!encode_queue.empty()) {
-    const auto& phrase(encode_queue.front().first);
-    const auto& weight_str(encode_queue.front().second);
+  #pragma omp parallel for
+  for (auto &entry: encode_queue) {
+    const auto& phrase(entry.first);
+    const auto& weight_str(entry.second);
     if (!encoder->EncodePhrase(phrase, weight_str)) {
       LOG(ERROR) << "Encode failure: '" << phrase << "'.";
     }
-    encode_queue.pop();
   }
+
+  for (const auto &e: encoder->pending_entries) {
+    const auto& phrase(std::get<0>(e));
+    const auto& code_str(std::get<1>(e));
+    const auto& weight_str(std::get<2>(e));
+    CreateEntry(phrase, code_str, weight_str);
+  }
+
   LOG(INFO) << "Pass 2: total " << num_entries << " entries collected.";
   if (preset_vocabulary) {
     preset_vocabulary->Reset();
-    string phrase, weight_str;
-    while (preset_vocabulary->GetNextEntry(&phrase, &weight_str)) {
-      if (collection.find(phrase) != collection.end())
-        continue;
-      if (!encoder->EncodePhrase(phrase, weight_str)) {
-        LOG(WARNING) << "Encode failure: '" << phrase << "'.";
+
+    #pragma omp parallel
+    {
+      string phrase, weight_str;
+      bool has_entry;
+
+      while (true) {
+        #pragma omp critical
+        has_entry = preset_vocabulary->GetNextEntry(&phrase, &weight_str);
+
+        if (!has_entry)
+          break;
+
+        if (collection.find(phrase) != collection.end())
+          continue;
+        if (!encoder->EncodePhrase(phrase, weight_str)) {
+          LOG(WARNING) << "Encode failure: '" << phrase << "'.";
+        }
       }
     }
   }
@@ -220,8 +240,26 @@ bool EntryCollector::TranslateWord(const string& word, vector<string>* result) {
   }
   const auto& w = words.find(word);
   if (w != words.end()) {
-    std::sort(w->second.begin(), w->second.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+    // std::map<string, omp_lock_t>::iterator lock;
+    // bool needs_sort = false;
+
+    // #pragma omp critical
+    // {
+    //   lock = word_locks.find(word);
+    //   if (lock == word_locks.end()) {
+    //     lock = word_locks.emplace(word, omp_lock_t()).first;
+    //     omp_init_lock(&lock->second);
+    //     needs_sort = true;
+    //   }
+    // }
+
+    // omp_set_lock(&lock->second);
+    // if (needs_sort) {
+    //   std::sort(w->second.begin(), w->second.end(),
+    //       [](const auto& a, const auto& b) { return a.first < b.first; });
+    // }
+    // omp_unset_lock(&lock->second);
+    
     for (const auto& v : w->second) {
       const double kMinimalWeight = 0.05;  // 5%
       double min_weight = total_weight[word] * kMinimalWeight;
