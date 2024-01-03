@@ -10,6 +10,7 @@
 #include <rime/algo/calculus.h>
 
 #include <nvtx3/nvtx3.hpp>
+#include <omp.h>
 
 namespace rime {
 
@@ -116,6 +117,21 @@ bool Projection::Apply(string* value) {
   return modified;
 }
 
+omp_lock_t get_anchor(const string& s) {
+  // static map<string, omp_lock_t> anchors;
+  static omp_lock_t lock;
+  // omp_set_lock(&lock);
+  // auto e = anchors.find(s);
+  // if (e == anchors.end()) {
+  //   omp_init_lock(&anchors[s]);
+  //   e = anchors.find(s);
+  // }
+  // omp_unset_lock(&lock);
+  // return e->second;
+
+  return lock;
+}
+
 bool Projection::Apply(Script* value) {
   nvtx3::event_attributes attr{"Projection::Apply", nvtx3::rgb{0, 0, 128}, nvtx3::payload{value->size()}};
   nvtx3::scoped_range r{attr};
@@ -124,6 +140,16 @@ bool Projection::Apply(Script* value) {
     return false;
   bool modified = false;
   int round = 0;
+
+  using IndexedScript = map<string, map<string, SpellingProperties>>;
+  IndexedScript indexed_value;
+
+  for (const Script::value_type& v : *value) {
+    for (const Spelling& s : v.second) {
+      indexed_value[s.str][v.first] = s.properties;
+    }
+  }
+
   for (an<Calculation>& x : calculation_) {
     ++round;
     DLOG(INFO) << "round #" << round;
@@ -131,30 +157,124 @@ bool Projection::Apply(Script* value) {
     nvtx3::event_attributes attr{"Round", nvtx3::rgb{0, 0, 172}, nvtx3::payload{value->size()}};
     nvtx3::scoped_range r{attr};
 
-    Script temp;
-    for (const Script::value_type& v : *value) {
-      Spelling s(v.first);
+    IndexedScript temp;
+    vector<string> scriptKeys;
+
+    for (const IndexedScript::value_type& v : indexed_value) {
+      scriptKeys.push_back(v.first);
+    }
+
+    #pragma omp parallel for
+    for (auto &k: scriptKeys) {
+      auto &v = indexed_value[k];
+      Spelling s(k);
       bool applied = false;
+      string err;
       try {
         applied = x->Apply(&s);
       } catch (std::runtime_error& e) {
-        LOG(ERROR) << "Error applying calculation: " << e.what();
-        return false;
+        err = e.what();
+        continue;
       }
       if (applied) {
-        modified = true;
-        if (!x->deletion()) {
-          temp.Merge(v.first, SpellingProperties(), v.second);
-        }
-        if (x->addition() && !s.str.empty()) {
-          temp.Merge(s.str, s.properties, v.second);
-        }
+          modified = true;
+          if (!x->deletion()) {
+            // temp.Merge(k, SpellingProperties(), (*value)[k]);
+
+            omp_lock_t anchor = get_anchor(k);
+            omp_set_lock(&anchor);
+
+            auto &vs = temp[k];
+            for (const auto &[xs, xp]: v) {
+              auto e = vs.find(xs);
+              if (e == vs.end()) {
+                vs[xs] = xp;
+              } else {
+                SpellingProperties& zz(e->second);
+                if (xp.type < zz.type)
+                  zz.type = xp.type;
+                if (xp.credibility > zz.credibility)
+                  zz.credibility = xp.credibility;
+                zz.tips.clear();
+              }
+            }
+
+            omp_unset_lock(&anchor);
+          }
+          if (x->addition() && !s.str.empty()) {
+            // temp.Merge(s.str, s.properties, (*value)[k]);
+
+            omp_lock_t anchor = get_anchor(s.str);
+            omp_set_lock(&anchor);
+
+            auto &vs = temp[s.str];
+            for (auto &[xs, xp]: v) {
+              SpellingProperties& sp = s.properties;
+              {
+                if (sp.type > xp.type)
+                  xp.type = sp.type;
+                xp.credibility += sp.credibility;
+                if (!sp.tips.empty())
+                  xp.tips = sp.tips;
+              }
+              auto e = vs.find(xs);
+              if (e == vs.end()) {
+                vs[xs] = xp;
+              } else {
+                SpellingProperties& zz(e->second);
+                if (xp.type < zz.type)
+                  zz.type = xp.type;
+                if (xp.credibility > zz.credibility)
+                  zz.credibility = xp.credibility;
+                zz.tips.clear();
+              }
+            }
+
+            omp_unset_lock(&anchor);
+          }
       } else {
-        temp.Merge(v.first, SpellingProperties(), v.second);
+        // temp.Merge(k, SpellingProperties(), (*value)[k]);
+
+        omp_lock_t anchor = get_anchor(k);
+        omp_set_lock(&anchor);
+
+        auto &vs = temp[k];
+        for (const auto &[xs, xp]: v) {
+          auto e = vs.find(xs);
+          if (e == vs.end()) {
+            vs[xs] = xp;
+          } else {
+            SpellingProperties& zz(e->second);
+            if (xp.type < zz.type)
+              zz.type = xp.type;
+            if (xp.credibility > zz.credibility)
+              zz.credibility = xp.credibility;
+            zz.tips.clear();
+          }
+        }
+
+        omp_unset_lock(&anchor);
+      }
+
+      // const int thread_id = omp_get_thread_num();
+      // appliedSpellingCache[thread_id].emplace_back(k, s, applied, err);
+    }
+
+    indexed_value.swap(temp);
+  }
+
+  if (modified) {
+    Script temp;
+    for (const IndexedScript::value_type& v : indexed_value) {
+      for (const IndexedScript::mapped_type::value_type& s : v.second) {
+        Spelling sp(v.first);
+        sp.properties = s.second;
+        temp[v.second.begin()->first].emplace_back(sp);
       }
     }
     value->swap(temp);
   }
+
   return modified;
 }
 
