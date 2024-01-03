@@ -226,6 +226,7 @@ bool DictCompiler::BuildTable(int table_index,
   {
     nvtx3::event_attributes attr{"Build .table.bin", nvtx3::rgb{0, 128, 0}};
     nvtx3::scoped_range r{attr};
+    
     map<string, SyllableId> syllable_to_id;
     SyllableId syllable_id = 0;
     for (const auto& s : collector.syllabary) {
@@ -262,10 +263,16 @@ bool DictCompiler::BuildTable(int table_index,
     }
   }
   // build reverse db for the primary table
-  if (table_index == 0 &&
-      !BuildReverseDb(settings, collector, vocabulary, dict_file_checksum)) {
-    return false;
+  {
+    nvtx3::event_attributes attr{"Build Reverse DB", nvtx3::rgb{0, 0, 64}};
+    nvtx3::scoped_range r{attr};
+
+    if (table_index == 0 &&
+        !BuildReverseDb(settings, collector, vocabulary, dict_file_checksum)) {
+      return false;
+    }
   }
+  
   return true;
 }
 
@@ -291,7 +298,7 @@ bool DictCompiler::BuildPrism(const string& schema_file,
                               uint32_t schema_file_checksum) {
   nvtx3::event_attributes attr{"DictCompiler::BuildPrism", nvtx3::rgb{128, 0, 0}};
   nvtx3::scoped_range r{attr};
-  
+
   LOG(INFO) << "building prism...";
   auto target_path =
       relocate_target(prism_->file_name(), target_resolver_.get());
