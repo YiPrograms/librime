@@ -22,6 +22,8 @@
 #include <rime/resource.h>
 #include <rime/service.h>
 
+#include <nvtx3/nvtx3.hpp>
+
 namespace fs = std::filesystem;
 
 namespace rime {
@@ -80,6 +82,9 @@ static uint32_t compute_dict_file_checksum(uint32_t initial_checksum,
 }
 
 bool DictCompiler::Compile(const string& schema_file) {
+  nvtx3::event_attributes attr{schema_file, nvtx3::rgb{0, 128, 128}};
+  nvtx3::scoped_range r{attr};
+
   LOG(INFO) << "compiling dictionary for " << schema_file;
   bool build_table_from_source = true;
   DictSettings settings;
@@ -199,6 +204,10 @@ bool DictCompiler::BuildTable(int table_index,
                               DictSettings* settings,
                               const vector<string>& dict_files,
                               uint32_t dict_file_checksum) {
+
+  nvtx3::event_attributes attr{"DictCompiler::BuildTable", nvtx3::rgb{0, 255, 0}};
+  nvtx3::scoped_range r{attr};
+
   auto& table = tables_[table_index];
   auto target_path =
       relocate_target(table->file_name(), target_resolver_.get());
@@ -215,6 +224,8 @@ bool DictCompiler::BuildTable(int table_index,
   Vocabulary vocabulary;
   // build .table.bin
   {
+    nvtx3::event_attributes attr{"Build .table.bin", nvtx3::rgb{0, 128, 0}};
+    nvtx3::scoped_range r{attr};
     map<string, SyllableId> syllable_to_id;
     SyllableId syllable_id = 0;
     for (const auto& s : collector.syllabary) {
@@ -278,6 +289,9 @@ bool DictCompiler::BuildReverseDb(DictSettings* settings,
 bool DictCompiler::BuildPrism(const string& schema_file,
                               uint32_t dict_file_checksum,
                               uint32_t schema_file_checksum) {
+  nvtx3::event_attributes attr{"DictCompiler::BuildPrism", nvtx3::rgb{128, 0, 0}};
+  nvtx3::scoped_range r{attr};
+  
   LOG(INFO) << "building prism...";
   auto target_path =
       relocate_target(prism_->file_name(), target_resolver_.get());

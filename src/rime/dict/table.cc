@@ -13,6 +13,8 @@
 #include <rime/algo/syllabifier.h>
 #include <rime/dict/table.h>
 
+#include <nvtx3/nvtx3.hpp>
+
 namespace rime {
 
 const char kTableFormatLatest[] = "Rime::Table/4.0";
@@ -315,6 +317,10 @@ bool Table::Build(const Syllabary& syllabary,
                   const Vocabulary& vocabulary,
                   size_t num_entries,
                   uint32_t dict_file_checksum) {
+
+  nvtx3::event_attributes attr{"Table::Build", nvtx3::rgb{128, 0, 0}};
+  nvtx3::scoped_range r{attr};
+
   const size_t kReservedSize = 4096;
   size_t num_syllables = syllabary.size();
   size_t estimated_file_size =

@@ -12,6 +12,7 @@
 #include <rime/dict/dict_settings.h>
 #include <rime/dict/entry_collector.h>
 #include <rime/dict/preset_vocabulary.h>
+#include <nvtx3/nvtx3.hpp>
 
 namespace rime {
 
@@ -23,6 +24,9 @@ EntryCollector::EntryCollector(Syllabary&& fixed_syllabary)
 EntryCollector::~EntryCollector() {}
 
 void EntryCollector::Configure(DictSettings* settings) {
+  nvtx3::event_attributes attr{"Configure", nvtx3::rgb{0, 128, 0}};
+  nvtx3::scoped_range r{attr};
+
   if (settings->use_preset_vocabulary()) {
     LoadPresetVocabulary(settings);
   }
@@ -55,6 +59,9 @@ void EntryCollector::LoadPresetVocabulary(DictSettings* settings) {
 }
 
 void EntryCollector::Collect(const string& dict_file) {
+  nvtx3::event_attributes attr{"Collect", nvtx3::rgb{0, 255, 0}};
+  nvtx3::scoped_range r{attr};
+
   LOG(INFO) << "collecting entries from " << dict_file;
   // read table
   std::ifstream fin(dict_file.c_str());
@@ -126,24 +133,36 @@ void EntryCollector::Collect(const string& dict_file) {
 }
 
 void EntryCollector::Finish() {
-  #pragma omp parallel for
-  for (auto &entry: encode_queue) {
-    const auto& phrase(entry.first);
-    const auto& weight_str(entry.second);
-    if (!encoder->EncodePhrase(phrase, weight_str)) {
-      LOG(ERROR) << "Encode failure: '" << phrase << "'.";
+  nvtx3::event_attributes attr{"Finish", nvtx3::rgb{255, 0, 0}};
+  nvtx3::scoped_range r{attr};
+
+  {
+    nvtx3::event_attributes attr{"Script Encoder", nvtx3::rgb{255, 0, 0}};
+    nvtx3::scoped_range r{attr};
+
+    #pragma omp parallel for
+    for (auto &entry: encode_queue) {
+      const auto& phrase(entry.first);
+      const auto& weight_str(entry.second);
+      if (!encoder->EncodePhrase(phrase, weight_str)) {
+        LOG(ERROR) << "Encode failure: '" << phrase << "'.";
+      }
+    }
+
+    for (const auto &e: encoder->pending_entries) {
+      const auto& phrase(std::get<0>(e));
+      const auto& code_str(std::get<1>(e));
+      const auto& weight_str(std::get<2>(e));
+      CreateEntry(phrase, code_str, weight_str);
     }
   }
 
-  for (const auto &e: encoder->pending_entries) {
-    const auto& phrase(std::get<0>(e));
-    const auto& code_str(std::get<1>(e));
-    const auto& weight_str(std::get<2>(e));
-    CreateEntry(phrase, code_str, weight_str);
-  }
 
   LOG(INFO) << "Pass 2: total " << num_entries << " entries collected.";
   if (preset_vocabulary) {
+    nvtx3::event_attributes attr{"Table Encoder", nvtx3::rgb{0, 0, 255}};
+    nvtx3::scoped_range r{attr};
+
     preset_vocabulary->Reset();
 
     #pragma omp parallel

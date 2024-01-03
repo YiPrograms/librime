@@ -16,3 +16,6 @@
 [submodule "opencc"]
 	path = deps/opencc
 	url = https://github.com/BYVoid/OpenCC.git
+[submodule "deps/nvtx"]
+	path = deps/nvtx
+	url = https://github.com/NVIDIA/NVTX.git
