@@ -123,25 +123,50 @@ bool Projection::Apply(Script* value) {
     ++round;
     DLOG(INFO) << "round #" << round;
     Script temp;
+    vector<string> scriptKeys;
+    vector<std::tuple<string, Spelling, bool, string>> appliedSpellingCache;
+
     for (const Script::value_type& v : *value) {
-      Spelling s(v.first);
+      scriptKeys.push_back(v.first);
+    }
+
+    #pragma omp parallel for schedule(dynamic, 10)
+    for (auto &k: scriptKeys) {
+      auto& v = (*value)[k];
+      Spelling s(k);
       bool applied = false;
+      string err;
       try {
         applied = x->Apply(&s);
       } catch (std::runtime_error& e) {
-        LOG(ERROR) << "Error applying calculation: " << e.what();
+        err = e.what();
+      }
+
+      #pragma omp critical
+      appliedSpellingCache.emplace_back(k, s, applied, err);
+    }
+
+    for (auto const & v : appliedSpellingCache) {
+      string k = std::get<0>(v);
+      Spelling s = std::get<1>(v);
+      bool applied = std::get<2>(v);
+      string err = std::get<3>(v);
+
+      if (!err.empty()) {
+        LOG(ERROR) << "Error applying calculation: " << err;
         return false;
       }
+
       if (applied) {
         modified = true;
         if (!x->deletion()) {
-          temp.Merge(v.first, SpellingProperties(), v.second);
+          temp.Merge(k, SpellingProperties(), (*value)[k]);
         }
         if (x->addition() && !s.str.empty()) {
-          temp.Merge(s.str, s.properties, v.second);
+          temp.Merge(s.str, s.properties, (*value)[k]);
         }
       } else {
-        temp.Merge(v.first, SpellingProperties(), v.second);
+        temp.Merge(k, SpellingProperties(), (*value)[k]);
       }
     }
     value->swap(temp);
