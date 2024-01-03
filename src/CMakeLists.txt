@@ -72,8 +72,9 @@ else()
 endif()
 
 if(BUILD_SHARED_LIBS)
+  find_package(OpenMP)
   add_library(rime ${rime_src})
-  target_link_libraries(rime ${rime_deps})
+  target_link_libraries(rime ${rime_deps} OpenMP::OpenMP_CXX)
   set_target_properties(rime PROPERTIES
     DEFINE_SYMBOL "RIME_EXPORTS"
     VERSION ${rime_version}
