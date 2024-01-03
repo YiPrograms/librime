@@ -14,6 +14,10 @@
 #include <rime/dict/preset_vocabulary.h>
 #include <nvtx3/nvtx3.hpp>
 
+#include <omp.h>
+#include <thread>
+#include <mutex>
+
 namespace rime {
 
 EntryCollector::EntryCollector() {}
@@ -132,6 +136,29 @@ void EntryCollector::Collect(const string& dict_file) {
   LOG(INFO) << "num of entries to encode: " << encode_queue.size();
 }
 
+void writer_thread(EntryCollector* collector, Encoder *encoder) {
+  while (true) {
+    if (encoder->pending_entries.empty()) {
+      if (collector->work_done)
+        break;
+      continue;
+    }
+
+    std::tuple<string, string, string> entry;
+
+    #pragma omp critical
+    {
+      entry = encoder->pending_entries.back();
+      encoder->pending_entries.pop_back();
+    }
+    
+    const auto& phrase(std::get<0>(entry));
+    const auto& code_str(std::get<1>(entry));
+    const auto& weight_str(std::get<2>(entry));
+    collector->CreateEntry(phrase, code_str, weight_str);
+  }
+}
+
 void EntryCollector::Finish() {
   nvtx3::event_attributes attr{"Finish", nvtx3::rgb{255, 0, 0}};
   nvtx3::scoped_range r{attr};
@@ -140,7 +167,10 @@ void EntryCollector::Finish() {
     nvtx3::event_attributes attr{"Script Encoder", nvtx3::rgb{255, 0, 0}};
     nvtx3::scoped_range r{attr};
 
-    #pragma omp parallel for
+    std::thread writer(writer_thread, this, encoder.get());
+
+    const int num_threads = omp_get_max_threads();
+    #pragma omp parallel for num_threads(num_threads - 1)
     for (auto &entry: encode_queue) {
       const auto& phrase(entry.first);
       const auto& weight_str(entry.second);
@@ -149,12 +179,9 @@ void EntryCollector::Finish() {
       }
     }
 
-    for (const auto &e: encoder->pending_entries) {
-      const auto& phrase(std::get<0>(e));
-      const auto& code_str(std::get<1>(e));
-      const auto& weight_str(std::get<2>(e));
-      CreateEntry(phrase, code_str, weight_str);
-    }
+    work_done = true;
+
+    writer.join();
   }
 
 
@@ -165,23 +192,19 @@ void EntryCollector::Finish() {
 
     preset_vocabulary->Reset();
 
-    #pragma omp parallel
-    {
-      string phrase, weight_str;
-      bool has_entry;
+    vector<pair<string, string>> preset_vocabs;
+    string phrase, weight_str;
+    while (preset_vocabulary->GetNextEntry(&phrase, &weight_str)) {
+      preset_vocabs.emplace_back(phrase, weight_str);
+    }
 
-      while (true) {
-        #pragma omp critical
-        has_entry = preset_vocabulary->GetNextEntry(&phrase, &weight_str);
+    #pragma omp parallel for
+    for (auto &[phrase, weight_str]: preset_vocabs) {
+      if (collection.find(phrase) != collection.end())
+        continue;
 
-        if (!has_entry)
-          break;
-
-        if (collection.find(phrase) != collection.end())
-          continue;
-        if (!encoder->EncodePhrase(phrase, weight_str)) {
-          LOG(WARNING) << "Encode failure: '" << phrase << "'.";
-        }
+      if (!encoder->EncodePhrase(phrase, weight_str)) {
+        LOG(WARNING) << "Encode failure: '" << phrase << "'.";
       }
     }
   }

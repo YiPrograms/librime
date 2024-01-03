@@ -46,6 +46,7 @@ leveldb:
 	cd $(src_dir)/leveldb; \
 	cmake . -B$(build) \
 	-DLEVELDB_BUILD_BENCHMARKS:BOOL=OFF \
+	-DBUILD_SHARED_LIBS=ON \
 	-DLEVELDB_BUILD_TESTS:BOOL=OFF \
 	-DCMAKE_BUILD_TYPE:STRING="Release" \
 	-DCMAKE_INSTALL_PREFIX:PATH="$(rime_root)" \

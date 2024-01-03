@@ -9,6 +9,8 @@
 #include <rime/algo/algebra.h>
 #include <rime/algo/calculus.h>
 
+#include <nvtx3/nvtx3.hpp>
+
 namespace rime {
 
 bool Script::AddSyllable(const string& syllable) {
@@ -115,6 +117,9 @@ bool Projection::Apply(string* value) {
 }
 
 bool Projection::Apply(Script* value) {
+  nvtx3::event_attributes attr{"Projection::Apply", nvtx3::rgb{0, 0, 128}, nvtx3::payload{value->size()}};
+  nvtx3::scoped_range r{attr};
+
   if (!value || value->empty())
     return false;
   bool modified = false;
@@ -122,6 +127,10 @@ bool Projection::Apply(Script* value) {
   for (an<Calculation>& x : calculation_) {
     ++round;
     DLOG(INFO) << "round #" << round;
+
+    nvtx3::event_attributes attr{"Round", nvtx3::rgb{0, 0, 172}, nvtx3::payload{value->size()}};
+    nvtx3::scoped_range r{attr};
+
     Script temp;
     for (const Script::value_type& v : *value) {
       Spelling s(v.first);

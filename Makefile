@@ -30,7 +30,7 @@ ifndef NOPARALLEL
 export MAKEFLAGS+=" -j$(( $(nproc) + 1)) "
 endif
 
-debug install-debug uninstall-debug test-debug: build ?= debug
+debug install-debug uninstall-debug test-debug: build ?= build
 build ?= build
 
 .PHONY: all deps thirdparty xcode clean \
@@ -83,10 +83,10 @@ merged-plugins:
 debug:
 	cmake . -B$(build) \
 	-DCMAKE_INSTALL_PREFIX=$(prefix) \
-	-DCMAKE_BUILD_TYPE=Debug \
+	-DCMAKE_BUILD_TYPE=RelWithDebInfo \
 	-DBUILD_MERGED_PLUGINS=OFF \
 	-DENABLE_EXTERNAL_PLUGINS=ON
-	cmake --build $(build)
+	cmake --build $(build) -j8
 
 install:
 	cmake --build $(build) --target install

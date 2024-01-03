@@ -226,12 +226,14 @@ bool DictCompiler::BuildTable(int table_index,
   {
     nvtx3::event_attributes attr{"Build .table.bin", nvtx3::rgb{0, 128, 0}};
     nvtx3::scoped_range r{attr};
-    
+
     map<string, SyllableId> syllable_to_id;
     SyllableId syllable_id = 0;
     for (const auto& s : collector.syllabary) {
       syllable_to_id[s] = syllable_id++;
     }
+
+    #pragma omp parallel for
     for (const auto& r : collector.entries) {
       Code code;
       for (const auto& s : r->raw_code) {
@@ -239,7 +241,9 @@ bool DictCompiler::BuildTable(int table_index,
       }
       // release memory in time to reduce memory usage
       RawCode().swap(r->raw_code);
-      auto ls = vocabulary.LocateEntries(code);
+      rime::ShortDictEntryList *ls;
+      #pragma omp critical
+      ls = vocabulary.LocateEntries(code);
       if (!ls) {
         LOG(ERROR) << "Error locating entries in vocabulary.";
         continue;
@@ -248,6 +252,7 @@ bool DictCompiler::BuildTable(int table_index,
       e->code.swap(code);
       e->text.swap(r->text);
       e->weight = log(r->weight > 0 ? r->weight : DBL_EPSILON);
+      #pragma omp critical
       ls->push_back(e);
     }
     // release memory in time to reduce memory usage

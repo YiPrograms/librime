@@ -10,6 +10,7 @@
 
 #include <boost/regex.hpp>
 #include <rime_api.h>
+#include <boost/lockfree/stack.hpp>
 
 #include <tuple>
 
@@ -46,7 +47,7 @@ class Encoder {
 
   void set_collector(PhraseCollector* collector) { collector_ = collector; }
   
-  vector<std::tuple<string, string, string>> pending_entries;
+  std::vector<std::tuple<string, string, string>> pending_entries;
 
  protected:
   PhraseCollector* collector_;

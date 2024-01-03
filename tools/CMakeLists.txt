@@ -20,14 +20,14 @@ target_link_libraries(rime_patch
 set(rime_console_src "rime_console.cc")
 add_executable(rime_console ${rime_console_src})
 target_compile_definitions(rime_console PRIVATE RIME_IMPORTS)
-target_link_libraries(rime_console ${rime_console_deps})
+target_link_libraries(rime_console ${rime_console_deps} unwind)
 
 set(rime_dict_manager_src "rime_dict_manager.cc")
 add_executable(rime_dict_manager ${rime_dict_manager_src})
 target_link_libraries(rime_dict_manager
   ${rime_library}
   ${rime_dict_library}
-  ${rime_levers_library})
+  ${rime_levers_library} unwind)
 
 set(rime_deployer_src "rime_deployer.cc")
 add_executable(rime_deployer ${rime_deployer_src})
@@ -35,7 +35,7 @@ target_compile_definitions(rime_deployer PRIVATE RIME_IMPORTS)
 target_link_libraries(rime_deployer
   ${rime_library}
   ${rime_dict_library}
-  ${rime_levers_library})
+  ${rime_levers_library} unwind)
 
 set(rime_table_decompiler_src 
   "rime_table_decompiler.cc"
@@ -47,7 +47,7 @@ set(rime_table_decompiler_src
 add_executable(rime_table_decompiler ${rime_table_decompiler_src})
 target_link_libraries(rime_table_decompiler
   ${rime_library}
-  ${rime_dict_library})
+  ${rime_dict_library} unwind)
 
 install(TARGETS rime_deployer DESTINATION ${BIN_INSTALL_DIR})
 install(TARGETS rime_dict_manager DESTINATION ${BIN_INSTALL_DIR})

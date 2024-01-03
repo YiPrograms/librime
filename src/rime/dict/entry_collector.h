@@ -42,6 +42,7 @@ class EntryCollector : public PhraseCollector {
   vector<of<RawDictEntry>> entries;
   size_t num_entries = 0;
   ReverseLookupTable stems;
+  bool work_done;
 
  public:
   EntryCollector();
@@ -59,6 +60,9 @@ class EntryCollector : public PhraseCollector {
                    const string& weight_str);
   bool TranslateWord(const string& word, vector<string>* code);
 
+  the<Encoder> encoder;
+
+
  protected:
   void LoadPresetVocabulary(DictSettings* settings);
   // call Collect() multiple times for all required tables
@@ -68,7 +72,6 @@ class EntryCollector : public PhraseCollector {
 
  protected:
   the<PresetVocabulary> preset_vocabulary;
-  the<Encoder> encoder;
   EncodeQueue encode_queue;
   set<string /* word */> collection;
   WordMap words;
