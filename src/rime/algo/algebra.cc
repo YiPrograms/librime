@@ -6,6 +6,7 @@
 //
 #include <algorithm>
 #include <fstream>
+#include <shared_mutex>
 #include <rime/algo/algebra.h>
 #include <rime/algo/calculus.h>
 
@@ -117,20 +118,20 @@ bool Projection::Apply(string* value) {
   return modified;
 }
 
-omp_lock_t get_anchor(const string& s) {
-  // static map<string, omp_lock_t> anchors;
-  static omp_lock_t lock;
-  // omp_set_lock(&lock);
-  // auto e = anchors.find(s);
-  // if (e == anchors.end()) {
-  //   omp_init_lock(&anchors[s]);
-  //   e = anchors.find(s);
-  // }
-  // omp_unset_lock(&lock);
-  // return e->second;
+// omp_lock_t get_anchor(const string& s) {
+//   // static map<string, omp_lock_t> anchors;
+//   // static omp_lock_t lock;
+//   // omp_set_lock(&lock);
+//   // auto e = anchors.find(s);
+//   // if (e == anchors.end()) {
+//   //   omp_init_lock(&anchors[s]);
+//   //   e = anchors.find(s);
+//   // }
+//   // omp_unset_lock(&lock);
+//   // return e->second;
 
-  return lock;
-}
+//   return lock;
+// }
 
 bool Projection::Apply(Script* value) {
   nvtx3::event_attributes attr{"Projection::Apply", nvtx3::rgb{0, 0, 128}, nvtx3::payload{value->size()}};
@@ -143,48 +144,79 @@ bool Projection::Apply(Script* value) {
 
   using IndexedScript = map<string, map<string, SpellingProperties>>;
   IndexedScript indexed_value;
+  vector<string> value_keys;
+
+  static omp_lock_t anchors[1024];
+  for (int i = 0; i < 1024; ++i) {
+    omp_init_lock(&anchors[i]);
+  }
+
+  auto get_anchor = [&](const string& s) -> omp_lock_t& {
+    size_t h = std::hash<string>{}(s);
+    return anchors[h % 1024];
+  };
 
   for (const Script::value_type& v : *value) {
+    auto &vs = indexed_value[v.first];
     for (const Spelling& s : v.second) {
-      indexed_value[s.str][v.first] = s.properties;
+      vs[s.str] = s.properties;
     }
+    value_keys.push_back(v.first);
   }
 
   for (an<Calculation>& x : calculation_) {
     ++round;
-    DLOG(INFO) << "round #" << round;
+    LOG(INFO) << "round #" << round;
 
     nvtx3::event_attributes attr{"Round", nvtx3::rgb{0, 0, 172}, nvtx3::payload{value->size()}};
     nvtx3::scoped_range r{attr};
 
-    IndexedScript temp;
-    vector<string> scriptKeys;
-
-    for (const IndexedScript::value_type& v : indexed_value) {
-      scriptKeys.push_back(v.first);
-    }
+    IndexedScript new_value;
+    vector<string> new_value_keys;
+    std::shared_mutex new_value_lock;
 
     #pragma omp parallel for
-    for (auto &k: scriptKeys) {
+    for (auto &k: value_keys) {
       auto &v = indexed_value[k];
       Spelling s(k);
       bool applied = false;
       string err;
+
       try {
         applied = x->Apply(&s);
       } catch (std::runtime_error& e) {
         err = e.what();
         continue;
       }
+
       if (applied) {
           modified = true;
           if (!x->deletion()) {
             // temp.Merge(k, SpellingProperties(), (*value)[k]);
 
+            new_value_lock.lock_shared();
+            auto it = new_value.find(k);
+            if (it == new_value.end()) {
+              // Not in new_value, we have to add a new entry
+              // Acquire exclusive lock
+              new_value_lock.unlock_shared();
+              new_value_lock.lock();
+
+              it = new_value.emplace(k, map<string, SpellingProperties>()).first;
+              new_value_keys.push_back(k);
+
+              new_value_lock.unlock();
+            } else {
+              new_value_lock.unlock_shared();
+            }
+
+            auto &vs = it->second;
+
+            // Now tempering with new_value[k]
+            // Get an anchor lock of k
             omp_lock_t anchor = get_anchor(k);
             omp_set_lock(&anchor);
 
-            auto &vs = temp[k];
             for (const auto &[xs, xp]: v) {
               auto e = vs.find(xs);
               if (e == vs.end()) {
@@ -204,10 +236,27 @@ bool Projection::Apply(Script* value) {
           if (x->addition() && !s.str.empty()) {
             // temp.Merge(s.str, s.properties, (*value)[k]);
 
+            new_value_lock.lock_shared();
+            auto it = new_value.find(s.str);
+            if (it == new_value.end()) {
+              // Not in new_value, we have to add a new entry
+              // Acquire exclusive lock
+              new_value_lock.unlock_shared();
+              new_value_lock.lock();
+
+              it = new_value.emplace(s.str, map<string, SpellingProperties>()).first;
+              new_value_keys.push_back(s.str);
+
+              new_value_lock.unlock();
+            } else {
+              new_value_lock.unlock_shared();
+            }
+
+            auto &vs = it->second;
+
             omp_lock_t anchor = get_anchor(s.str);
             omp_set_lock(&anchor);
 
-            auto &vs = temp[s.str];
             for (auto &[xs, xp]: v) {
               SpellingProperties& sp = s.properties;
               {
@@ -235,10 +284,29 @@ bool Projection::Apply(Script* value) {
       } else {
         // temp.Merge(k, SpellingProperties(), (*value)[k]);
 
+        new_value_lock.lock_shared();
+        auto it = new_value.find(k);
+        if (it == new_value.end()) {
+          // Not in new_value, we have to add a new entry
+          // Acquire exclusive lock
+          new_value_lock.unlock_shared();
+          new_value_lock.lock();
+
+          it = new_value.emplace(k, map<string, SpellingProperties>()).first;
+          new_value_keys.push_back(k);
+
+          new_value_lock.unlock();
+        } else {
+          new_value_lock.unlock_shared();
+        }
+
+        auto &vs = it->second;
+
+        // Now tempering with new_value[k]
+        // Get an anchor lock of k
         omp_lock_t anchor = get_anchor(k);
         omp_set_lock(&anchor);
 
-        auto &vs = temp[k];
         for (const auto &[xs, xp]: v) {
           auto e = vs.find(xs);
           if (e == vs.end()) {
@@ -255,21 +323,20 @@ bool Projection::Apply(Script* value) {
 
         omp_unset_lock(&anchor);
       }
-
-      // const int thread_id = omp_get_thread_num();
-      // appliedSpellingCache[thread_id].emplace_back(k, s, applied, err);
     }
 
-    indexed_value.swap(temp);
+    indexed_value.swap(new_value);
+    value_keys.swap(new_value_keys);
   }
 
   if (modified) {
     Script temp;
     for (const IndexedScript::value_type& v : indexed_value) {
+      vector<Spelling>& m = temp[v.first];
       for (const IndexedScript::mapped_type::value_type& s : v.second) {
-        Spelling sp(v.first);
-        sp.properties = s.second;
-        temp[v.second.begin()->first].emplace_back(sp);
+        Spelling y(s.first);
+        y.properties = s.second;
+        m.emplace_back(y);
       }
     }
     value->swap(temp);
