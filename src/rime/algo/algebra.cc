@@ -4,6 +4,7 @@
 //
 // 2012-01-19 GONG Chen <chen.sst@gmail.com>
 //
+#include <tuple>
 #include <algorithm>
 #include <fstream>
 #include <shared_mutex>
@@ -173,11 +174,16 @@ bool Projection::Apply(Script* value) {
 
     IndexedScript new_value;
     vector<string> new_value_keys;
+    std::unordered_set<string> new_value_keys_set;
     std::shared_mutex new_value_lock;
+
+    const int num_threads = omp_get_max_threads();
+    vector<std::tuple<string, Spelling, bool, string>> applied_spelling_cache[num_threads];
 
     #pragma omp parallel for
     for (auto &k: value_keys) {
-      auto &v = indexed_value[k];
+      // phase 1: apply
+      auto& v = indexed_value[k];
       Spelling s(k);
       bool applied = false;
       string err;
@@ -189,139 +195,116 @@ bool Projection::Apply(Script* value) {
         continue;
       }
 
-      if (applied) {
-          modified = true;
-          if (!x->deletion()) {
-            // temp.Merge(k, SpellingProperties(), (*value)[k]);
+      applied_spelling_cache[omp_get_thread_num()].emplace_back(k, s, applied, err);
+    }
 
-            new_value_lock.lock_shared();
-            auto it = new_value.find(k);
-            if (it == new_value.end()) {
-              // Not in new_value, we have to add a new entry
-              // Acquire exclusive lock
-              new_value_lock.unlock_shared();
-              new_value_lock.lock();
+    // phase 2: create entries
+    for (int tid = 0; tid < num_threads; tid++) {
+      for (auto &t: applied_spelling_cache[tid]){
+        auto &[k, s, applied, err] = t;
 
-              it = new_value.emplace(k, map<string, SpellingProperties>()).first;
-              new_value_keys.push_back(k);
+        if (!err.empty()) {
+          LOG(ERROR) << "Error applying calculation: " << err;
+          return false;
+        }
 
-              new_value_lock.unlock();
-            } else {
-              new_value_lock.unlock_shared();
-            }
+        modified |= applied;
 
-            auto &vs = it->second;
-
-            // Now tempering with new_value[k]
-            // Get an anchor lock of k
-            omp_lock_t anchor = get_anchor(k);
-            omp_set_lock(&anchor);
-
-            for (const auto &[xs, xp]: v) {
-              auto e = vs.find(xs);
-              if (e == vs.end()) {
-                vs[xs] = xp;
-              } else {
-                SpellingProperties& zz(e->second);
-                if (xp.type < zz.type)
-                  zz.type = xp.type;
-                if (xp.credibility > zz.credibility)
-                  zz.credibility = xp.credibility;
-                zz.tips.clear();
-              }
-            }
-
-            omp_unset_lock(&anchor);
-          }
-          if (x->addition() && !s.str.empty()) {
-            // temp.Merge(s.str, s.properties, (*value)[k]);
-
-            new_value_lock.lock_shared();
-            auto it = new_value.find(s.str);
-            if (it == new_value.end()) {
-              // Not in new_value, we have to add a new entry
-              // Acquire exclusive lock
-              new_value_lock.unlock_shared();
-              new_value_lock.lock();
-
-              it = new_value.emplace(s.str, map<string, SpellingProperties>()).first;
-              new_value_keys.push_back(s.str);
-
-              new_value_lock.unlock();
-            } else {
-              new_value_lock.unlock_shared();
-            }
-
-            auto &vs = it->second;
-
-            omp_lock_t anchor = get_anchor(s.str);
-            omp_set_lock(&anchor);
-
-            for (auto &[xs, xp]: v) {
-              SpellingProperties& sp = s.properties;
-              {
-                if (sp.type > xp.type)
-                  xp.type = sp.type;
-                xp.credibility += sp.credibility;
-                if (!sp.tips.empty())
-                  xp.tips = sp.tips;
-              }
-              auto e = vs.find(xs);
-              if (e == vs.end()) {
-                vs[xs] = xp;
-              } else {
-                SpellingProperties& zz(e->second);
-                if (xp.type < zz.type)
-                  zz.type = xp.type;
-                if (xp.credibility > zz.credibility)
-                  zz.credibility = xp.credibility;
-                zz.tips.clear();
-              }
-            }
-
-            omp_unset_lock(&anchor);
-          }
-      } else {
-        // temp.Merge(k, SpellingProperties(), (*value)[k]);
-
-        new_value_lock.lock_shared();
-        auto it = new_value.find(k);
-        if (it == new_value.end()) {
+        if (!applied || (applied && !x->deletion())) {
+          // temp.Merge(k, SpellingProperties(), (*value)[k]);
           // Not in new_value, we have to add a new entry
-          // Acquire exclusive lock
-          new_value_lock.unlock_shared();
-          new_value_lock.lock();
-
-          it = new_value.emplace(k, map<string, SpellingProperties>()).first;
-          new_value_keys.push_back(k);
-
-          new_value_lock.unlock();
-        } else {
-          new_value_lock.unlock_shared();
-        }
-
-        auto &vs = it->second;
-
-        // Now tempering with new_value[k]
-        // Get an anchor lock of k
-        omp_lock_t anchor = get_anchor(k);
-        omp_set_lock(&anchor);
-
-        for (const auto &[xs, xp]: v) {
-          auto e = vs.find(xs);
-          if (e == vs.end()) {
-            vs[xs] = xp;
-          } else {
-            SpellingProperties& zz(e->second);
-            if (xp.type < zz.type)
-              zz.type = xp.type;
-            if (xp.credibility > zz.credibility)
-              zz.credibility = xp.credibility;
-            zz.tips.clear();
+          if (new_value_keys_set.find(k) == new_value_keys_set.end()) {
+            new_value.emplace(k, map<string, SpellingProperties>());
+            new_value_keys.push_back(k);
+            new_value_keys_set.insert(k);
           }
         }
 
-        omp_unset_lock(&anchor);
+        if (applied && (x->addition() && !s.str.empty())) {
+          // temp.Merge(s.str, s.properties, (*value)[k]);
+          if (new_value_keys_set.find(s.str) == new_value_keys_set.end()) {
+            new_value.emplace(s.str, map<string, SpellingProperties>()); // only create keys, so it is still empty
+            new_value_keys.push_back(s.str);
+            new_value_keys_set.insert(s.str);
+          }
+        }
+      }
+    }
+
+    // phase 3: update entries
+    for (int tid = 0; tid < num_threads; tid++) {
+      #pragma omp parallel for
+      for (auto &t: applied_spelling_cache[tid]){
+        auto &[k, s, applied, err] = t;
+
+        if (!applied || (applied && !x->deletion())) {
+          // temp.Merge(k, SpellingProperties(), (*value)[k]);
+          // entry has been created in new_value during phase 2
+
+          // Now tempering with new_value[k]
+          // Get an anchor lock of k
+          omp_lock_t anchor = get_anchor(k);
+          omp_set_lock(&anchor);
+
+          auto v = indexed_value[k];
+          auto it = new_value.find(k);
+          auto &vs = it->second;
+
+          for (const auto &[xs, xp]: v) {
+            auto e = vs.find(xs);
+            if (e == vs.end()) {
+              vs[xs] = xp;
+            } else {
+              SpellingProperties& zz(e->second);
+              if (xp.type < zz.type)
+                zz.type = xp.type;
+              if (xp.credibility > zz.credibility)
+                zz.credibility = xp.credibility;
+              zz.tips.clear();
+            }
+          }
+          omp_unset_lock(&anchor);
+        }
+
+        if (applied && (x->addition() && !s.str.empty())) {
+          // temp.Merge(s.str, s.properties, (*value)[k]);
+          // entry has been created in new_value during phase 2
+
+          omp_lock_t anchor_s = get_anchor(s.str);
+          omp_lock_t anchor_k = get_anchor(k);
+
+          omp_set_lock(&anchor_s);
+          omp_set_lock(&anchor_k);
+
+          auto v = indexed_value[k];
+          auto it = new_value.find(s.str);
+          auto &vs = it->second;
+
+          for (auto &[xs, xp]: v) {
+            SpellingProperties& sp = s.properties;
+            {
+              if (sp.type > xp.type)
+                xp.type = sp.type;
+              xp.credibility += sp.credibility;
+              if (!sp.tips.empty())
+                xp.tips = sp.tips;
+            }
+            auto e = vs.find(xs);
+            if (e == vs.end()) {
+              vs[xs] = xp;
+            } else {
+              SpellingProperties& zz(e->second);
+              if (xp.type < zz.type)
+                zz.type = xp.type;
+              if (xp.credibility > zz.credibility)
+                zz.credibility = xp.credibility;
+              zz.tips.clear();
+            }
+          }
+
+          omp_unset_lock(&anchor_k);
+          omp_unset_lock(&anchor_s);
+        }
       }
     }
 
