@@ -10,6 +10,7 @@
 #include <rime/algo/calculus.h>
 
 #include <nvtx3/nvtx3.hpp>
+#include <omp.h>
 
 namespace rime {
 
@@ -122,39 +123,93 @@ bool Projection::Apply(Script* value) {
 
   if (!value || value->empty())
     return false;
+
+  const int n_threads = omp_get_max_threads();
+  const int keys_per_thread = value->size() / n_threads;
+
+  map<string, vector<Spelling>>::const_iterator thread_start[n_threads + 1];
+
+  auto it = value->begin();
+  for (int i = 0; i < n_threads; ++i) {
+    thread_start[i] = it;
+
+    if (i == n_threads - 1)
+      thread_start[i + 1] = value->end();
+    else
+      std::advance(it, keys_per_thread);
+  }
+
+  Script *thread_script[n_threads];
   bool modified = false;
-  int round = 0;
-  for (an<Calculation>& x : calculation_) {
-    ++round;
-    DLOG(INFO) << "round #" << round;
 
-    nvtx3::event_attributes attr{"Round", nvtx3::rgb{0, 0, 172}, nvtx3::payload{value->size()}};
-    nvtx3::scoped_range r{attr};
+  bool error = false;
 
-    Script temp;
-    for (const Script::value_type& v : *value) {
-      Spelling s(v.first);
-      bool applied = false;
-      try {
-        applied = x->Apply(&s);
-      } catch (std::runtime_error& e) {
-        LOG(ERROR) << "Error applying calculation: " << e.what();
-        return false;
+  #pragma omp parallel
+  {
+    int thread_id = omp_get_thread_num();
+  
+    Script *local_script = reinterpret_cast<Script *>(
+      new map<string, vector<Spelling>>(thread_start[thread_id], thread_start[thread_id + 1])
+    );
+
+    thread_script[thread_id] = local_script;
+
+    int round = 0;
+
+    for (an<Calculation>& x : calculation_) {
+      if (error)
+        break;
+
+      ++round;
+      DLOG(INFO) << "round #" << round;
+
+      nvtx3::event_attributes attr{"Round", nvtx3::rgb{0, 0, 172}, nvtx3::payload{local_script->size()}};
+      nvtx3::scoped_range r{attr};
+
+      Script new_script;
+      for (const Script::value_type& v : *local_script) {
+        Spelling s(v.first);
+        bool applied = false;
+        try {
+          applied = x->Apply(&s);
+        } catch (std::runtime_error& e) {
+          LOG(ERROR) << "Error applying calculation: " << e.what();
+          error = true;
+        }
+        if (applied) {
+          modified = true;
+          if (!x->deletion()) {
+            new_script.Merge(v.first, SpellingProperties(), v.second);
+          }
+          if (x->addition() && !s.str.empty()) {
+            new_script.Merge(s.str, s.properties, v.second);
+          }
+        } else {
+          new_script.Merge(v.first, SpellingProperties(), v.second);
+        }
       }
-      if (applied) {
-        modified = true;
-        if (!x->deletion()) {
-          temp.Merge(v.first, SpellingProperties(), v.second);
-        }
-        if (x->addition() && !s.str.empty()) {
-          temp.Merge(s.str, s.properties, v.second);
-        }
-      } else {
-        temp.Merge(v.first, SpellingProperties(), v.second);
+      local_script->swap(new_script);
+    }
+
+  } // end omp parallel
+
+  if (error)
+    return false;
+
+  if (modified) {
+    // Merge all thread scripts
+
+    Script new_value;
+    for (int i = 0; i < n_threads; ++i) {
+      for (const Script::value_type& v : *thread_script[i]) {
+        new_value.Merge(v.first, SpellingProperties(), v.second);
       }
     }
-    value->swap(temp);
+    value->swap(new_value);
   }
+
+  LOG(INFO) << "Total Size: " << value->size();
+  
   return modified;
 }
 
